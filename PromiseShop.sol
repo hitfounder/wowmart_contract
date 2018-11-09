@@ -110,18 +110,9 @@ contract PromiseShop is usingOraclize {
     // Settings
     autoReward = true;
     autoLoss = true;
-    oraclizeScript = "Qmf4FTA7GhgJGdsUF2cBwQ6a1WM5vs3BSH8SQvdSszyFTe";
-    baseTimeStamp = 1462281072;
+    oraclizeScript = "";
+    baseTimeStamp = 0;
     fee = 0;
-    activityTraits[1] = ActivityData(5000, 40000, false); // Strava run distance
-    activityTraits[2] = ActivityData(60, 180, true); // Strava swim 100 meters time
-    activityTraits[3] = ActivityData(1000, 6000, false); // Strava swim distance
-    activityTraits[4] = ActivityData(20000, 200000, false); // Strava ride distance
-    activityTraits[5] = ActivityData(1530, 4050, true); // Strava triathlon super sprint
-    activityTraits[6] = ActivityData(3720, 8100, true); // Strava triathlon sprint
-    activityTraits[7] = ActivityData(7500, 14400, true); // Strava triathlon olympic
-    activityTraits[8] = ActivityData(15000, 30600, true); // Strava triathlon half iron man
-    activityTraits[9] = ActivityData(36000, 61200, true); // Strava triathlon iron man
   }
 
   function setAutoReward(bool enabled) public adminOrOwner(ACCESS_SET_AUTO_REWARD) {
@@ -228,6 +219,8 @@ contract PromiseShop is usingOraclize {
 
   function createQuery(string token,
                        uint16 activity) private constant returns(string) {
+    assert(bytes(oraclizeScript).length != 0);
+
     uint promiseTime = baseTimeStamp != 0 ? baseTimeStamp : now;
     string memory part1 = strConcat("[computation] ['",
                                     oraclizeScript,
