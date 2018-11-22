@@ -28,6 +28,11 @@ contract PromiseShop is usingOraclize {
     bool lessIsBetter;
   }
 
+  struct ExistingID {
+    uint32 id;
+    bool exists;
+  }
+
   event Promise(
     address indexed sender,
     uint deposit,
@@ -53,14 +58,18 @@ contract PromiseShop is usingOraclize {
 
   address public owner;
 
-  // Maps promise ID to PromiseData
-  mapping(uint32 => PromiseData) public promises;
-  
-  // Maps query id to promise ID
-  mapping(bytes32 => uint32) public queries;
+  // Contains all promises
+  PromiseData[] public promises;
+  // Contains all promise IDs (indexes in "promises" array)
+  // of specified sender (address)
+  mapping(address => uint32[]) public senderPromises;
 
-  uint32 public promisesCount;
+  // Maps query id to existing promise ID
+  mapping(bytes32 => ExistingID) public queries;
+
+  // Summ off complexity of all promises
   uint32 public overallComplexity;
+  // Summ off deposits af all promises
   uint public overallDeposits;
 
   // Rewards (bonuses) fund
@@ -101,7 +110,6 @@ contract PromiseShop is usingOraclize {
     // OAR = OraclizeAddrResolverI(0x6f485C8BF6fc43eA212E93BBF8ce046C7f1cb475);
 
     owner = msg.sender;
-    promisesCount = 0;
     overallComplexity = 0;
     overallDeposits = 0;
     fund = 0;
@@ -147,6 +155,10 @@ contract PromiseShop is usingOraclize {
     admins[admin] = rights;
   }
 
+  function isAdmin(address user) public constant returns(bool) {
+    return user == owner || admins[user] != 0;
+  }
+
   function checkCondition(uint32 targetParameter,
                           uint32 actualParameter,
                           bool lessIsBetter) public pure returns(bool) {
@@ -154,9 +166,9 @@ contract PromiseShop is usingOraclize {
       return false;
     }
     if (lessIsBetter) {
-      return actualParameter <= targetParameter; 
+      return actualParameter <= targetParameter;
     } else {
-      return actualParameter >= targetParameter; 
+      return actualParameter >= targetParameter;
     }
   }
 
@@ -213,6 +225,14 @@ contract PromiseShop is usingOraclize {
     return address(this).balance - overallDeposits - fund - hold;
   }
 
+  function getPromisesCount() public constant returns(uint) {
+    return promises.length;
+  }
+
+  function getSenderPromisesCount(address sender) public constant returns(uint) {
+    return senderPromises[sender].length;
+  }
+
   function withdraw() public adminOrOwner(ACCESS_WITHDRAW) {
     msg.sender.transfer(getWithdrawAmount());
   }
@@ -238,10 +258,10 @@ contract PromiseShop is usingOraclize {
   function __callback(bytes32 id, string result) public {
     // @todo reschedule query if deadline > 60 days
     require(msg.sender == oraclize_cbAddress());
-    require(queries[id] != 0);
+    require(queries[id].exists);
     assert(fund >= hold);
 
-    uint32 promiseId = queries[id];
+    uint32 promiseId = queries[id].id;
     uint32 actualParameter = uint32(parseInt(result));
 
     emit Response(promiseId, result, actualParameter);
@@ -373,21 +393,23 @@ contract PromiseShop is usingOraclize {
     }
 
     uint deposit = msg.value - oraclizePrice;
-    uint32 promiseId = ++promisesCount;
     uint8 complexity = getComplexity(activity, parameter);
     overallComplexity += complexity;
     overallDeposits += deposit;
     uint absoluteDeadline = now + deadline;
-    promises[promiseId] = PromiseData(msg.sender,
-                                      deposit,
-                                      0,
-                                      absoluteDeadline,
-                                      activity,
-                                      parameter,
-                                      PromiseState.Active);
+    promises.push(PromiseData(msg.sender,
+                              deposit,
+                              0,
+                              absoluteDeadline,
+                              activity,
+                              parameter,
+                              PromiseState.Active));
+
+    uint32 promiseId = uint32(promises.length) - 1;
+    senderPromises[msg.sender].push(promiseId);
 
     bytes32 queryId = oraclize_query(deadline, "nested", createQuery(token, activity));
-    queries[queryId] = promiseId;
+    queries[queryId] = ExistingID(promiseId, true);
 
     emit Promise(msg.sender,
                  deposit,
