@@ -1,38 +1,11 @@
-pragma solidity ^0.4.22;
+pragma solidity ^0.4.23;
+pragma experimental ABIEncoderV2;
 
+import "../contracts/Ownable.sol";
+import "../contracts/PromiseShopStorage.sol";
 import "../installed_contracts/oraclize-api/contracts/usingOraclize.sol";
 
-contract PromiseShop is usingOraclize {
-  enum PromiseState {
-    Active,        // Promise is in progress
-    Succeded,      // Promise is finished with performed conditions
-    Failed,        // Promise is finished with failed conditions
-    PendingReward, // Promise succeded, reward is posponed
-    PendingLoss,   // Promise failed, loss is posponed
-    Error          // Error while getting query response
-  }
-
-  struct PromiseData {
-    address sender;
-    uint deposit;
-    uint bonus;
-    uint deadline;      // Absolute timestamp in future, seconds since unix epoch
-    uint16 activity;    // Activity ID
-    uint32 parameter;   // Parameter value for activity
-    PromiseState state;
-  }
-
-  struct ActivityData {
-    uint32 minParameter;
-    uint32 maxParameter;
-    bool lessIsBetter;
-  }
-
-  struct ExistingID {
-    uint32 id;
-    bool exists;
-  }
-
+contract PromiseShop is PromiseShopStorage, usingOraclize, Ownable {
   event Promise(
     address indexed sender,
     uint deposit,
@@ -41,7 +14,7 @@ contract PromiseShop is usingOraclize {
     uint32 promiseId,
     uint16 activity,
     uint32 parameter,
-    PromiseState state
+    PromiseShopTypes.State state
   );
 
   event Response(
@@ -52,45 +25,9 @@ contract PromiseShop is usingOraclize {
 
   modifier adminOrOwner(uint16 requiredAccess) {
     require(msg.sender == owner || 
-           ((admins[msg.sender] & requiredAccess) == 0 ? false : true));
+           ((settingsData.getAdminRights(msg.sender) & requiredAccess) == 0 ? false : true));
     _;
   }
-
-  address public owner;
-
-  // Contains all promises
-  PromiseData[] public promises;
-  // Contains all promise IDs (indexes in "promises" array)
-  // of specified sender (address)
-  mapping(address => uint32[]) public senderPromises;
-
-  // Maps query id to existing promise ID
-  mapping(bytes32 => ExistingID) public queries;
-
-  // Summ off complexity of all promises
-  uint32 public overallComplexity;
-  // Summ off deposits af all promises
-  uint public overallDeposits;
-
-  // Rewards (bonuses) fund
-  uint public fund;
-  // Rewards in pending state
-  uint public hold;
-
-  // Rewards are paid automatically without approve
-  bool public autoReward;
-  // Losses are withdrawn automatically without approve
-  bool public autoLoss;
-  // IPFS hash of docker file containing script to be executed while quering
-  string public oraclizeScript;
-  // Promise base time stamp, defines promise start time. Only for tests.
-  uint32 public baseTimeStamp;
-  // Configurable activity traits
-  mapping(uint16 => ActivityData) public activityTraits;
-  // List of admins, maps address to access rights
-  mapping(address => uint16) public admins;
-  // Promise fee
-  uint public fee;
 
   // Access rights for admins
   uint16 constant ACCESS_SET_AUTO_REWARD = 2**0;
@@ -109,59 +46,125 @@ contract PromiseShop is usingOraclize {
     // uncomment this and specify the address.
     // OAR = OraclizeAddrResolverI(0x6f485C8BF6fc43eA212E93BBF8ce046C7f1cb475);
 
-    owner = msg.sender;
-    overallComplexity = 0;
-    overallDeposits = 0;
-    fund = 0;
-    hold = 0;
-
-    // Settings
-    autoReward = true;
-    autoLoss = true;
-    oraclizeScript = "";
-    baseTimeStamp = 0;
-    fee = 0;
+    // Set custom gas price, default was 20 GWei
+    oraclize_setCustomGasPrice(10000000000);
   }
 
+  // PromiseShopData getters
+  //////////////////////////
+  function promises(uint promiseId) public view returns(address sender,
+                                                        uint deposit,
+                                                        uint bonus,
+                                                        uint deadline,
+                                                        uint16 activity,
+                                                        uint32 parameter,
+                                                        PromiseShopTypes.State state) {
+    PromiseShopTypes.Data memory promise = promisesData.getPromise(promiseId);
+    sender = promise.sender;
+    deposit = promise.deposit;
+    bonus = promise.bonus;
+    deadline = promise.deadline;
+    activity = promise.activity;
+    parameter = promise.parameter;
+    state = promise.state;
+  }
+
+  function senderPromises(address sender, uint index) public view returns(uint32) {
+    return promisesData.getSenderPromiseId(sender, index);
+  }
+
+  function overallComplexity() public view returns(uint32) {
+    return promisesData.getOverallComplexity();
+  }
+
+  function overallDeposits() public view returns(uint) {
+    return promisesData.getOverallDeposits();
+  }
+
+  function fund() public view returns(uint) {
+    return promisesData.getFund();
+  }
+
+  function hold() public view returns(uint) {
+    return promisesData.getHold();
+  }
+
+  function getPromisesCount() public view returns(uint) {
+    return promisesData.getPromisesCount();
+  }
+
+  function getSenderPromisesCount(address sender) public view returns(uint) {
+    return promisesData.getSenderPromisesCount(sender);
+  }
+
+  // Options setters
+  //////////////////
   function setAutoReward(bool enabled) public adminOrOwner(ACCESS_SET_AUTO_REWARD) {
-    autoReward = enabled;
+    settingsData.setFlag("ar", enabled);
+  }
+
+  function autoReward() public view returns(bool) {
+    return settingsData.getFlag("ar");
   }
 
   function setAutoLoss(bool enabled) public adminOrOwner(ACCESS_SET_AUTO_LOSS) {
-    autoLoss = enabled;
+    settingsData.setFlag("al", enabled);
   }
 
-  function setBaseTimeStamp(uint32 timeStamp) public adminOrOwner(ACCESS_SET_BASE_TIMESTAMP) {
-    baseTimeStamp = timeStamp;
+  function autoLoss() public view returns(bool) {
+    return settingsData.getFlag("al");
+  }
+
+  function setBaseTimeStamp(uint timeStamp) public adminOrOwner(ACCESS_SET_BASE_TIMESTAMP) {
+    settingsData.setValue("bt", timeStamp);
+  }
+
+  function baseTimeStamp() public view returns(uint) {
+    return settingsData.getValue("bt");
   }
 
   function setActivityTraits(uint16 activity,
                              bool lessIsBetter,
                              uint32 minParameter,
                              uint32 maxParameter) public adminOrOwner(ACCESS_SET_ACTIVITY_TRAITS) {
-    activityTraits[activity] =
-      ActivityData(minParameter, maxParameter, lessIsBetter);
+    settingsData.setActivity(activity, lessIsBetter, minParameter, maxParameter);
+  }
+  
+  function activityTraits(uint16 activity) public view returns(uint32 minParameter,
+                                                               uint32 maxParameter,
+                                                               bool lessIsBetter) {
+    (minParameter, maxParameter, lessIsBetter) = settingsData.getActivity(activity);
   }
 
   function setOraclizeScript(string newScript) public adminOrOwner(ACCESS_SET_ORACLIZE_SCRIPT) {
-    oraclizeScript = newScript;
+    settingsData.setOraclizeScript(newScript);
+  }
+
+  function oraclizeScript() public view returns(string) {
+    return settingsData.getOraclizeScript();
   }
 
   function setFee(uint newFee) public adminOrOwner(ACCESS_SET_FEE) {
-    fee = newFee;
+    settingsData.setValue("fe", newFee);
+  }
+
+  function fee() public view returns(uint) {
+    return settingsData.getValue("fe");
   }
 
   function addAdmin(address admin, uint16 rights) public adminOrOwner(ACCESS_ADD_ADMIN) {
-    admins[admin] = rights;
+    settingsData.setAdminRights(admin, rights);
   }
 
-  function isAdmin(address user) public constant returns(bool) {
-    return user == owner || admins[user] != 0;
+  function isAdmin(address user) public view returns(bool) {
+    return user == owner || settingsData.getAdminRights(user) != 0;
   }
 
+  // Businness logic
+  //////////////////
   function checkCondition(uint32 targetParameter,
                           uint32 actualParameter,
-                          bool lessIsBetter) public pure returns(bool) {
+                          bool lessIsBetter) private pure returns(bool) {
     if (actualParameter == 0) {
       return false;
     }
@@ -173,8 +176,10 @@ contract PromiseShop is usingOraclize {
   }
 
   function getComplexity(uint16 activity,
-                         uint32 parameter) public constant returns(uint8) {
-    ActivityData storage activityData = activityTraits[activity];
+                         uint32 parameter) public view returns(uint8) {
+    PromiseShopTypes.ActivityData memory activityData;
+    (activityData.minParameter, activityData.maxParameter, activityData.lessIsBetter) =
+        settingsData.getActivity(activity);
     require(activityData.minParameter > 0 || activityData.maxParameter > 0);
     
     if (parameter < activityData.minParameter) {
@@ -197,10 +202,11 @@ contract PromiseShop is usingOraclize {
   // Only for external calls - for evaluating promises, that are not yet commited.
   function getBonus(uint deposit,
                     uint16 activity,
-                    uint32 parameter) public constant returns(uint) {
+                    uint32 parameter) public view returns(uint) {
     uint8 complexity = getComplexity(activity, parameter);
     return getBonusInternal(deposit, complexity,
-        overallComplexity + complexity, overallDeposits + deposit);
+        promisesData.getOverallComplexity() + complexity,
+        promisesData.getOverallDeposits() + deposit);
   }
 
   // Calculate bonus for already commited promise.
@@ -208,29 +214,31 @@ contract PromiseShop is usingOraclize {
   function getBonusInternal(uint deposit,
                             uint8 currentComplexity,
                             uint32 totalComplexity,
-                            uint totalDeposits) private constant returns(uint) {
+                            uint totalDeposits) private view returns(uint) {
     assert(totalComplexity != 0 && totalDeposits != 0);
-    uint bonus_complexity_based = (currentComplexity * (fund - hold)) / totalComplexity;
-    uint bonus_deposit_based = (deposit * (fund - hold)) / totalDeposits;
-    return (bonus_complexity_based > bonus_deposit_based) ? bonus_deposit_based
-                                                          : bonus_complexity_based;
+
+    uint fund = promisesData.getFund();
+    uint hold = promisesData.getHold();
+    assert(fund >= hold);
+    
+    uint freeCash = fund - hold;
+    uint bonusComplexityBased = (currentComplexity * freeCash) / totalComplexity;
+    uint bonusDepositBased = (deposit * freeCash) / totalDeposits;
+    return (bonusComplexityBased > bonusDepositBased) ? bonusDepositBased
+                                                      : bonusComplexityBased;
   }
 
-  function getQueryPrice() public constant returns(uint) {
-    return oraclize_getPrice("computation") + fee;
+  function getQueryPrice() public view returns(uint) {
+    // Set custom gas limit to prevent "out of gas" on callback, default was 200,000 gas
+    return oraclize_getPrice("computation", 400000) + settingsData.getValue("fe");
   }
 
-  function getWithdrawAmount() public constant returns(uint) {
+  function getWithdrawAmount() public view returns(uint) {
+    uint overallDeposits = promisesData.getOverallDeposits();
+    uint fund = promisesData.getFund();
+    uint hold = promisesData.getHold();
     assert(address(this).balance >= overallDeposits + fund + hold);
     return address(this).balance - overallDeposits - fund - hold;
-  }
-
-  function getPromisesCount() public constant returns(uint) {
-    return promises.length;
-  }
-
-  function getSenderPromisesCount(address sender) public constant returns(uint) {
-    return senderPromises[sender].length;
   }
 
   function withdraw() public adminOrOwner(ACCESS_WITHDRAW) {
@@ -238,18 +246,21 @@ contract PromiseShop is usingOraclize {
   }
 
   function createQuery(string token,
-                       uint16 activity) private constant returns(string) {
-    assert(bytes(oraclizeScript).length != 0);
+                       uint16 activity) private view returns(string) {
+    assert(bytes(settingsData.getOraclizeScript()).length != 0);
 
+    uint baseTimeStamp = settingsData.getValue("bt");
     uint promiseTime = baseTimeStamp != 0 ? baseTimeStamp : now;
+    bool lessIsBetter;
+    (,,lessIsBetter) = settingsData.getActivity(activity);
     string memory part1 = strConcat("[computation] ['",
-                                    oraclizeScript,
+                                    settingsData.getOraclizeScript(),
                                     "', '${[decrypt] ",
                                     token,
                                     "}', '");
     string memory part2 = strConcat(uint2str(activity),
                                     " ', '",
-                                    uint2str(activityTraits[activity].lessIsBetter ? 1 : 0),
+                                    uint2str(lessIsBetter ? 1 : 0),
                                     " ', '",
                                     uint2str(promiseTime));
     return strConcat(part1, part2, "']");
@@ -258,46 +269,52 @@ contract PromiseShop is usingOraclize {
   function __callback(bytes32 id, string result) public {
     // @todo reschedule query if deadline > 60 days
     require(msg.sender == oraclize_cbAddress());
-    require(queries[id].exists);
+
+    PromiseShopTypes.ExistingID memory promiseId = promisesData.getQuery(id);
+    require(promiseId.exists);
+
+    uint fund = promisesData.getFund();
+    uint hold = promisesData.getHold();
     assert(fund >= hold);
 
-    uint32 promiseId = queries[id].id;
     uint32 actualParameter = uint32(parseInt(result));
 
-    emit Response(promiseId, result, actualParameter);
+    emit Response(promiseId.id, result, actualParameter);
 
-    PromiseData storage promise = promises[promiseId];
+    PromiseShopTypes.Data memory promise = promisesData.getPromise(promiseId.id);
     uint8 complexity = getComplexity(promise.activity, promise.parameter);
     promise.bonus = getBonusInternal(promise.deposit,
                                      complexity,
-                                     overallComplexity,
-                                     overallDeposits);
-    hold += promise.bonus;
+                                     promisesData.getOverallComplexity(),
+                                     promisesData.getOverallDeposits());
+    promisesData.setHold(hold + promise.bonus);
 
     uint resultLength = bytes(result).length;
-    bool resultIsNotANumber = actualParameter == 0 && resultLength > 1;
+    bool resultIsNotANumber = actualParameter == 0 && resultLength > 0;
+    bool lessIsBetter;
+    (,,lessIsBetter) = settingsData.getActivity(promise.activity);
     if (resultLength == 0 || resultIsNotANumber) {
-      promise.state = PromiseState.Error;
-    } else
-    if (checkCondition(promise.parameter,
-                       actualParameter,
-                       activityTraits[promise.activity].lessIsBetter)) {
-      if (autoReward)
+      promise.state = PromiseShopTypes.State.Error;
+    } else if (checkCondition(promise.parameter,
+                              actualParameter,
+                              lessIsBetter)) {
+      if (settingsData.getFlag("ar"))
         reward(promise, complexity, false);  // Cannot throw
       else
-        promise.state = PromiseState.PendingReward;
+        promise.state = PromiseShopTypes.State.PendingReward;
     } else {
-      if (autoLoss)
+      if (settingsData.getFlag("al"))
         loss(promise, complexity);
       else
-        promise.state = PromiseState.PendingLoss;
+        promise.state = PromiseShopTypes.State.PendingLoss;
     }
 
+    promisesData.setPromise(promiseId.id, promise);
     emit Promise(promise.sender,
                  promise.deposit,
                  promise.bonus,
                  promise.deadline,
-                 promiseId,
+                 promiseId.id,
                  promise.activity,
                  promise.parameter,
                  promise.state);
@@ -305,7 +322,7 @@ contract PromiseShop is usingOraclize {
 
   // Send reward for succedded promise.
   // If canThrow == false, if sending is failed, promise moves to PendingReward state
-  function reward(PromiseData storage promise, uint8 complexity, bool canThrow) internal {
+  function reward(PromiseShopTypes.Data memory promise, uint8 complexity, bool canThrow) internal {
     bool sendResult = true;
     if (canThrow) {
       promise.sender.transfer(promise.deposit + promise.bonus);
@@ -314,52 +331,53 @@ contract PromiseShop is usingOraclize {
     }
 
     if (sendResult) {
-      overallComplexity -= complexity;
-      overallDeposits -= promise.deposit;
-      fund -= promise.bonus;
-      hold -= promise.bonus;
-      promise.state = PromiseState.Succeded;
+      promisesData.setOverallComplexity(promisesData.getOverallComplexity() - complexity);
+      promisesData.setOverallDeposits(promisesData.getOverallDeposits() - promise.deposit);
+      promisesData.setFund(promisesData.getFund() - promise.bonus);
+      promisesData.setHold(promisesData.getHold() - promise.bonus);
+      promise.state = PromiseShopTypes.State.Succeded;
     } else {
-      promise.state = PromiseState.PendingReward;
+      promise.state = PromiseShopTypes.State.PendingReward;
     }
   }
 
   // Add money to fund, after failed promise
-  function loss(PromiseData storage promise, uint8 complexity) internal {
-    overallComplexity -= complexity;
-    overallDeposits -= promise.deposit;
-    fund += promise.deposit;
-    hold -= promise.bonus;
-    promise.state = PromiseState.Failed;
+  function loss(PromiseShopTypes.Data memory promise, uint8 complexity) internal {
+    promisesData.setOverallComplexity(promisesData.getOverallComplexity() - complexity);
+    promisesData.setOverallDeposits(promisesData.getOverallDeposits() - promise.deposit);
+    promisesData.setFund(promisesData.getFund() + promise.deposit);
+    promisesData.setHold(promisesData.getHold() - promise.bonus);
+
+    promise.state = PromiseShopTypes.State.Failed;
   }
 
   // Resolves pending promise
   // approve - promise resolution
   function resolve(uint32 promiseId, bool approve) public adminOrOwner(ACCESS_RESOLVE) {
-    PromiseData storage promise = promises[promiseId];
+    PromiseShopTypes.Data memory promise = promisesData.getPromise(promiseId);
     require(promise.deposit != 0);
-    require(promise.state == PromiseState.PendingReward ||
-            promise.state == PromiseState.PendingLoss ||
-            promise.state == PromiseState.Error);
+    require(promise.state == PromiseShopTypes.State.PendingReward ||
+            promise.state == PromiseShopTypes.State.PendingLoss ||
+            promise.state == PromiseShopTypes.State.Error);
 
     assert(address(this).balance >= promise.deposit + promise.bonus);
-    assert(fund >= promise.bonus);
-
-    bool rewardApproved = promise.state == PromiseState.PendingReward && approve;
-    bool lossRejected = promise.state == PromiseState.PendingLoss && !approve;
-    bool rewardRejected = promise.state == PromiseState.PendingReward && !approve;
-    bool lossApproved = promise.state == PromiseState.PendingLoss && approve;
-    bool error = promise.state == PromiseState.Error;
+    assert(promisesData.getFund() >= promise.bonus);
 
     uint8 complexity = getComplexity(promise.activity, promise.parameter);
-    if (rewardApproved || lossRejected || (error && approve)) {
+    if ((promise.state == PromiseShopTypes.State.PendingReward && approve) ||  // reward approved
+        (promise.state == PromiseShopTypes.State.PendingLoss && !approve) ||   // loss rejected
+        (promise.state == PromiseShopTypes.State.Error && approve)) {          // errror confirmed
       reward(promise, complexity, true);
-    } else if (rewardRejected || lossApproved || (error && !approve)) {
+    } else if ((promise.state == PromiseShopTypes.State.PendingReward && !approve) ||  // reward rejected
+               (promise.state == PromiseShopTypes.State.PendingLoss && approve) ||     // loss approved
+               (promise.state == PromiseShopTypes.State.Error && !approve)) {          // error not confirmed
       loss(promise, complexity);
     } else {
+      // Any other state is not posssible
       assert(false);
     }
 
+    promisesData.setPromise(promiseId, promise);
     emit Promise(promise.sender,
                  promise.deposit,
                  promise.bonus,
@@ -393,23 +411,22 @@ contract PromiseShop is usingOraclize {
     }
 
     uint deposit = msg.value - oraclizePrice;
-    uint8 complexity = getComplexity(activity, parameter);
-    overallComplexity += complexity;
-    overallDeposits += deposit;
+    promisesData.setOverallComplexity(
+        promisesData.getOverallComplexity() + getComplexity(activity, parameter));
+    promisesData.setOverallDeposits(
+        promisesData.getOverallDeposits() + deposit);
     uint absoluteDeadline = now + deadline;
-    promises.push(PromiseData(msg.sender,
+    uint32 promiseId = promisesData.addPromise(
+        PromiseShopTypes.Data(msg.sender,
                               deposit,
                               0,
                               absoluteDeadline,
                               activity,
                               parameter,
-                              PromiseState.Active));
-
-    uint32 promiseId = uint32(promises.length) - 1;
-    senderPromises[msg.sender].push(promiseId);
-
-    bytes32 queryId = oraclize_query(deadline, "nested", createQuery(token, activity));
-    queries[queryId] = ExistingID(promiseId, true);
+                              PromiseShopTypes.State.Active));
+    // Set custom gas limit to prevent "out of gas" on callback, default was 200,000 gas
+    promisesData.setQuery(
+        oraclize_query(deadline, "nested", createQuery(token, activity), 400000), promiseId);
 
     emit Promise(msg.sender,
                  deposit,
@@ -418,7 +435,7 @@ contract PromiseShop is usingOraclize {
                  promiseId,
                  activity,
                  parameter,
-                 PromiseState.Active);
+                 PromiseShopTypes.State.Active);
     return 0;
   }
 }
